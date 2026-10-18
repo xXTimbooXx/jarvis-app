@@ -147,7 +147,78 @@
     speechSynthesis.speak(u);
   }
 
+  function sprichStrom(url, danach) {
+    return new Promise(function (ok, nein) {
+      var ms = new MediaSource();
+      var el = new Audio();
+      var laeuft = false, fertig = false;
+      var an = ac.createAnalyser(); an.fftSize = 512;
+      var daten = new Uint8Array(an.fftSize);
+      try {
+        el.src = URL.createObjectURL(ms);
+        var q = ac.createMediaElementSource(el);
+        q.connect(an); an.connect(ac.destination);
+      } catch (e) { nein(e); return; }
+      function ende() {
+        if (fertig) return; fertig = true;
+        clearInterval(messer); sprichtGerade = false; ziel = 0; danach();
+      }
+      el.addEventListener("ended", ende);
+      el.addEventListener("error", function () { if (!laeuft) nein(new Error("Audio")); else ende(); });
+      el.addEventListener("playing", function () {
+        if (laeuft) return; laeuft = true;
+        sprichtGerade = true; hinweis = "";
+        setzeZustand("spricht", sauberText);
+        messer = setInterval(function () {
+          an.getByteTimeDomainData(daten);
+          var s = 0;
+          for (var k = 0; k < daten.length; k++) { var v = (daten[k] - 128) / 128; s += v * v; }
+          ziel = Math.min(1, Math.sqrt(s / daten.length) * 4);
+          externBis = performance.now() + 250;
+        }, 50);
+        ok();
+      });
+      quelle = { stop: function () { try { el.pause(); } catch (e) {} } };
+      ms.addEventListener("sourceopen", function () {
+        var sb;
+        try { sb = ms.addSourceBuffer("audio/mpeg"); } catch (e) { nein(e); return; }
+        var warte = [], gelesen = false;
+        function weiter() {
+          if (sb.updating) return;
+          if (warte.length) { try { sb.appendBuffer(warte.shift()); } catch (e) { if (!laeuft) nein(e); } return; }
+          if (gelesen && ms.readyState === "open") { try { ms.endOfStream(); } catch (e) {} }
+        }
+        sb.addEventListener("updateend", weiter);
+        fetch(url, { cache: "no-store" }).then(function (r) {
+          if (!r.ok) throw new Error("Stimmen-Fehler " + r.status);
+          var rd = r.body.getReader();
+          var gespielt = false;
+          function lies() {
+            return rd.read().then(function (x) {
+              if (x.done) { gelesen = true; weiter(); return; }
+              warte.push(x.value); weiter();
+              if (!gespielt) { gespielt = true; el.play().catch(function (e) { if (!laeuft) nein(e); }); }
+              return lies();
+            });
+          }
+          return lies();
+        }).catch(function (e) { if (!laeuft) nein(e); else ende(); });
+      });
+    });
+  }
+
   function sprichEleven(sauber, danach) {
+    var url = "http://localhost:8765/sprich?text=" + encodeURIComponent(sauber);
+    if (!(window.MediaSource && MediaSource.isTypeSupported && MediaSource.isTypeSupported("audio/mpeg"))) {
+      return sprichPuffer(sauber, danach);
+    }
+    sauberText = sauber;
+    return sprichStrom(url, danach).catch(function () { return sprichPuffer(sauber, danach); });
+  }
+
+  var sauberText = "";
+
+  function sprichPuffer(sauber, danach) {
     return fetch("http://localhost:8765/sprich?text=" + encodeURIComponent(sauber), { cache: "no-store" }).then(function (r) {
       if (!r.ok) throw new Error("Stimmen-Fehler " + r.status);
       return r.arrayBuffer();
