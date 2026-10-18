@@ -37,7 +37,7 @@
   // ---------- Gespraech: Mikrofon -> Gemini -> Stimme ----------
   var KEY = window.CLAUDE_KEY || "";
   var modelle = ["claude-haiku-5-5", "claude-haiku-4-5"];
-  var anweisung = "Du bist Jarvis, der persoenliche Sprachassistent von Tim. Du nennst Tim immer Sir, niemals beim Namen. Antworte immer auf Deutsch, freundlich, locker und sehr kurz (hoechstens 1 kurzer Satz), weil deine Antwort vorgelesen wird. Keine Aufzaehlungen, keine Sternchen, keine Sonderzeichen.";
+  var anweisung = "Du bist Jarvis, der persoenliche Sprachassistent von Tim. Du nennst Tim immer Sir, niemals beim Namen. Antworte immer auf Deutsch, freundlich, locker und sehr kurz (hoechstens 1 kurzer Satz), weil deine Antwort vorgelesen wird. Keine Aufzaehlungen, keine Sternchen, keine Sonderzeichen. Wenn Sir einen neuen Termin eintragen lassen will und Datum und Uhrzeit klar sind, haenge ganz am Ende deiner Antwort genau diese Markierung an: [TERMIN|JJJJ-MM-TT|HH:MM|Dauer in Minuten|Titel]. Beispiel: [TERMIN|2026-10-19|10:00|60|Zahnarzt]. Ohne Dauerangabe nimm 60. Sage davor in einem kurzen Satz, was du eintraegst. Fehlt Datum oder Uhrzeit, frage kurz nach und setze keine Markierung. Wenn Sir einen Termin loeschen will und Tag und Titel klar sind, haenge stattdessen am Ende an: [LOESCHEN|JJJJ-MM-TT|Titel]. Benutze Markierungen nie fuer etwas anderes.";
   var verlauf = [];
   var aktiv = false, erkenner = null, stimme = null, sprichtGerade = false;
   var knopf = document.getElementById("b-sprechen");
@@ -54,7 +54,7 @@
   if (window.speechSynthesis) { waehleStimme(); speechSynthesis.onvoiceschanged = waehleStimme; }
 
   var KAL_URL = "http://localhost:8765/termine";
-  var kalFrage = /termin|kalender|heute|morgen|bermorgen|woche|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|anstehen|ansteht|vorhaben|verabredung|uhrzeit|wie sp.t/i;
+  var kalFrage = /termin|eintrag|trag |kalender|heute|morgen|bermorgen|woche|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|anstehen|ansteht|vorhaben|verabredung|uhrzeit|wie sp.t/i;
   function kalTage(t){if(/woche/i.test(t))return 7;if(/morgen/i.test(t))return 2;if(/heute/i.test(t))return 1;return 7;}
   function holeTermine(text) {
     return fetch(KAL_URL + "?tage=" + kalTage(text), { cache: "no-store" }).then(function (r) {
@@ -82,7 +82,7 @@
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true"
         },
-        body: JSON.stringify({ model: modelle[i], max_tokens: 100, system: systemText, messages: verlauf })
+        body: JSON.stringify({ model: modelle[i], max_tokens: 200, system: systemText, messages: verlauf })
       }).then(function (r) {
         letzterStatus = r.status;
         if (r.status === 401 || r.status === 403) throw new Error("KEY");
@@ -190,6 +190,31 @@
     }
   }
 
+  function terminPruefen(antwort) {
+    var l = antwort.match(/\[LOESCHEN\|([^\]]*)\]/);
+    if (l) {
+      var lt = l[1].split("|");
+      var lsauber = antwort.replace(/\[LOESCHEN\|[^\]]*\]/g, "").trim();
+      if (lt.length < 2) return Promise.resolve("Das Loeschen hat leider nicht geklappt, Sir.");
+      return fetch("http://localhost:8765/loeschen?tag=" + encodeURIComponent(lt[0].trim()) + "&titel=" + encodeURIComponent(lt.slice(1).join("|").trim()), { cache: "no-store" }).then(function (r) {
+        if (r.ok) return lsauber;
+        if (r.status === 404) return "Diesen Termin habe ich nicht gefunden, Sir.";
+        if (r.status === 409) return "Den Termin kann ich nicht sicher zuordnen, Sir. Bitte loesche ihn selbst.";
+        return "Das Loeschen hat leider nicht geklappt, Sir.";
+      }).catch(function () { return "Das Loeschen hat leider nicht geklappt, Sir."; });
+    }
+    var m = antwort.match(/\[TERMIN\|([^\]]*)\]/);
+    var sauber = antwort.replace(/\[TERMIN\|[^\]]*\]/g, "").trim();
+    if (!m) return Promise.resolve(sauber || antwort);
+    var t = m[1].split("|");
+    if (t.length < 4) return Promise.resolve("Das Eintragen hat leider nicht geklappt, Sir.");
+    var url = "http://localhost:8765/eintragen?start=" + encodeURIComponent(t[0].trim() + "T" + t[1].trim()) +
+      "&dauer=" + encodeURIComponent(t[2].trim()) + "&titel=" + encodeURIComponent(t.slice(3).join("|").trim());
+    return fetch(url, { cache: "no-store" }).then(function (r) {
+      return r.ok ? sauber : "Das Eintragen hat leider nicht geklappt, Sir.";
+    }).catch(function () { return "Das Eintragen hat leider nicht geklappt, Sir."; });
+  }
+
   function hoeren() {
     if (!aktiv) return;
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -220,7 +245,10 @@
         fuellerSpielen();
         frageGemini(endtext).then(function (antwort) {
           if (!aktiv) return;
-          sprich(antwort, function () { if (aktiv) hoeren(); });
+          terminPruefen(antwort).then(function (text) {
+            if (!aktiv) return;
+            sprich(text, function () { if (aktiv) hoeren(); });
+          });
         }).catch(function (err) {
           var m = err.message === "KEY" ? "Der Claude-Schluessel wird nicht akzeptiert." : "Das hat nicht geklappt (Fehler " + letzterStatus + "). Ich hoere weiter zu.";
           setzeZustand("bereit", m);
