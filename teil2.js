@@ -37,7 +37,7 @@
   // ---------- Gespraech: Mikrofon -> Gemini -> Stimme ----------
   var KEY = window.CLAUDE_KEY || "";
   var modelle = ["claude-haiku-5-5", "claude-haiku-4-5"];
-  var anweisung = "Du bist Jarvis, der persoenliche Sprachassistent von Tim. Antworte immer auf Deutsch, freundlich, locker und sehr kurz (hoechstens 2 bis 3 Saetze), weil deine Antwort vorgelesen wird. Keine Aufzaehlungen, keine Sternchen, keine Sonderzeichen.";
+  var anweisung = "Du bist Jarvis, der persoenliche Sprachassistent von Tim. Du nennst Tim immer Sir, niemals beim Namen. Antworte immer auf Deutsch, freundlich, locker und sehr kurz (hoechstens 1 kurzer Satz), weil deine Antwort vorgelesen wird. Keine Aufzaehlungen, keine Sternchen, keine Sonderzeichen.";
   var verlauf = [];
   var aktiv = false, erkenner = null, stimme = null, sprichtGerade = false;
   var knopf = document.getElementById("b-sprechen");
@@ -53,6 +53,20 @@
   }
   if (window.speechSynthesis) { waehleStimme(); speechSynthesis.onvoiceschanged = waehleStimme; }
 
+  var KAL_URL = "http://localhost:8765/termine";
+  var kalFrage = /termin|kalender|heute|morgen|bermorgen|woche|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|anstehen|ansteht|vorhaben|verabredung|uhrzeit|wie sp.t/i;
+  function kalTage(t){if(/woche/i.test(t))return 7;if(/morgen/i.test(t))return 2;if(/heute/i.test(t))return 1;return 7;}
+  function holeTermine(text) {
+    return fetch(KAL_URL + "?tage=" + kalTage(text), { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error("Kalender " + r.status);
+      return r.json();
+    }).then(function (j) {
+      return "\n\nKalender-Daten (nutze sie fuer Fragen zu Terminen und zur Uhrzeit): " + j.text;
+    }).catch(function () {
+      return "\n\nDer Kalender ist gerade nicht erreichbar. Sage Sir das ehrlich, wenn er nach Terminen fragt.";
+    });
+  }
+  var systemText = anweisung;
   var letzterStatus = 0;
   function frageGemini(text) {
     verlauf.push({ role: "user", content: text });
@@ -68,7 +82,7 @@
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true"
         },
-        body: JSON.stringify({ model: modelle[i], max_tokens: 150, system: anweisung, messages: verlauf })
+        body: JSON.stringify({ model: modelle[i], max_tokens: 100, system: systemText, messages: verlauf })
       }).then(function (r) {
         letzterStatus = r.status;
         if (r.status === 401 || r.status === 403) throw new Error("KEY");
@@ -81,7 +95,10 @@
         });
       });
     }
-    return probiere(0).then(function (antwort) {
+    return (kalFrage.test(text) ? holeTermine(text) : Promise.resolve("")).then(function (kontext) {
+      systemText = anweisung + kontext;
+      return probiere(0);
+    }).then(function (antwort) {
       verlauf.push({ role: "assistant", content: antwort });
       return antwort;
     }, function (err) {
@@ -101,6 +118,20 @@
     } catch (e) { ac = null; }
   }
 
+  var fuellerBuf = null;
+  function fuellerLaden() {
+    if (fuellerBuf || !ac) return;
+    fetch("http://localhost:8765/sprich?text=" + encodeURIComponent("Einen Moment, Sir."), { cache: "no-store" })
+      .then(function (r) { return r.arrayBuffer(); })
+      .then(function (b) { return new Promise(function (ok, nein) { ac.decodeAudioData(b, ok, nein); }); })
+      .then(function (a) { fuellerBuf = a; })
+      .catch(function () {});
+  }
+  function fuellerSpielen() {
+    if (!fuellerBuf || !ac) return;
+    try { var q = ac.createBufferSource(); q.buffer = fuellerBuf; q.connect(ac.destination); q.start(0); } catch (e) {}
+  }
+
   function sprichBrowser(text, danach) {
     var sauber = text.replace(/[*_#]/g, "");
     if (!window.speechSynthesis) { danach(); return; }
@@ -117,12 +148,8 @@
   }
 
   function sprichEleven(sauber, danach) {
-    return fetch("https://api.elevenlabs.io/v1/text-to-speech/" + STIMME_ID + "?output_format=mp3_44100_64", {
-      method: "POST",
-      headers: { "xi-api-key": ELEVEN, "Content-Type": "application/json", "Accept": "audio/mpeg" },
-      body: JSON.stringify({ text: sauber, model_id: "eleven_flash_v2_5" })
-    }).then(function (r) {
-      if (!r.ok) throw new Error("Eleven-Fehler " + r.status);
+    return fetch("http://localhost:8765/sprich?text=" + encodeURIComponent(sauber), { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error("Stimmen-Fehler " + r.status);
       return r.arrayBuffer();
     }).then(function (buf) {
       return new Promise(function (ok, nein) { ac.decodeAudioData(buf, ok, nein); });
@@ -153,7 +180,7 @@
 
   function sprich(text, danach) {
     var sauber = text.replace(/[*_#]/g, "");
-    if (ELEVEN && ac) {
+    if (ac) {
       sprichEleven(sauber, danach).catch(function (err) {
         hinweis = "Browser-Stimme, " + (err && err.message ? err.message : "Fehler");
         if (aktiv) sprichBrowser(text, danach);
@@ -190,6 +217,7 @@
       if (endtext.trim()) {
         weiter = true;
         setzeZustand("denkt", endtext);
+        fuellerSpielen();
         frageGemini(endtext).then(function (antwort) {
           if (!aktiv) return;
           sprich(antwort, function () { if (aktiv) hoeren(); });
@@ -222,6 +250,7 @@
     // Stimme einmal "freischalten" (Browser-Regel: erst nach Tipp erlaubt)
     if (window.speechSynthesis) { var z = new SpeechSynthesisUtterance(" "); z.volume = 0; speechSynthesis.speak(z); }
     audioFreischalten();
+    fuellerLaden();
     hoeren();
   });
 
