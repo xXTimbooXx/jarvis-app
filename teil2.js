@@ -37,7 +37,7 @@
   // ---------- Gespraech: Mikrofon -> Gemini -> Stimme ----------
   var KEY = window.CLAUDE_KEY || "";
   var modelle = ["claude-haiku-5-5", "claude-haiku-4-5"];
-  var anweisung = "Du bist Jarvis, der persoenliche Sprachassistent von Tim. Du nennst Tim immer Sir, niemals beim Namen. Antworte immer auf Deutsch, freundlich, locker und sehr kurz (hoechstens 1 kurzer Satz), weil deine Antwort vorgelesen wird. Keine Aufzaehlungen, keine Sternchen, keine Sonderzeichen. Wenn Sir einen neuen Termin eintragen lassen will und Datum und Uhrzeit klar sind, haenge ganz am Ende deiner Antwort genau diese Markierung an: [TERMIN|JJJJ-MM-TT|HH:MM|Dauer in Minuten|Titel]. Beispiel: [TERMIN|2026-10-19|10:00|60|Zahnarzt]. Ohne Dauerangabe nimm 60. Sage davor in einem kurzen Satz, was du eintraegst. Fehlt Datum oder Uhrzeit, frage kurz nach und setze keine Markierung. Wenn Sir einen Termin loeschen will und Tag und Titel klar sind, haenge stattdessen am Ende an: [LOESCHEN|JJJJ-MM-TT|Titel]. Benutze Markierungen nie fuer etwas anderes. Bei einem Briefing (guten Morgen, Ueberblick) fasse Wetter, Termine und Nachrichten in hoechstens fuenf kurzen Saetzen zusammen. Nutze Wetter- und Nachrichtendaten nur, wenn sie unten angegeben sind, und erfinde nichts dazu.";
+  var anweisung = "Du bist Jarvis, der persoenliche Sprachassistent von Tim. Du nennst Tim immer Sir, niemals beim Namen. Antworte immer auf Deutsch, freundlich, locker und sehr kurz (hoechstens 1 kurzer Satz), weil deine Antwort vorgelesen wird. Keine Aufzaehlungen, keine Sternchen, keine Sonderzeichen. Wenn Sir einen neuen Termin eintragen lassen will und Datum und Uhrzeit klar sind, haenge ganz am Ende deiner Antwort genau diese Markierung an: [TERMIN|JJJJ-MM-TT|HH:MM|Dauer in Minuten|Titel]. Beispiel: [TERMIN|2026-10-19|10:00|60|Zahnarzt]. Ohne Dauerangabe nimm 60. Sage davor in einem kurzen Satz, was du eintraegst. Fehlt Datum oder Uhrzeit, frage kurz nach und setze keine Markierung. Wenn Sir einen Termin loeschen will und Tag und Titel klar sind, haenge stattdessen am Ende an: [LOESCHEN|JJJJ-MM-TT|Titel]. Benutze Markierungen nie fuer etwas anderes. Bei einem Briefing (guten Morgen, Ueberblick) fasse Wetter, Termine und Nachrichten in hoechstens fuenf kurzen Saetzen zusammen. Nutze Wetter- und Nachrichtendaten nur, wenn sie unten angegeben sind, und erfinde nichts dazu. Wenn Sir etwas fragt, das aktuelles Wissen aus dem Internet braucht (aktuelle Ereignisse, Ergebnisse, Preise, wer gerade ein Amt hat) und unten keine passenden Daten stehen, antworte NUR mit [SUCHE|kurzer Suchbegriff]. Bei Fragen, die du aus Allgemeinwissen sicher beantworten kannst, suche nicht.";
   var verlauf = [];
   var aktiv = false, erkenner = null, stimme = null, sprichtGerade = false;
   var knopf = document.getElementById("b-sprechen");
@@ -87,6 +87,16 @@
     if (newsFrage.test(text) || brief) teile.push(holeText("nachrichten", "Aktuelle Schlagzeilen (Tagesschau): ", "Die Nachrichten"));
     return Promise.all(teile).then(function (a) { return a.join(""); });
   }
+  function sucheHolen(q) {
+    return fetch("http://localhost:8765/suche?q=" + encodeURIComponent(q.trim()), { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error("Suche");
+      return r.json();
+    }).then(function (j) {
+      return "Suchergebnisse aus dem Internet zu " + q.trim() + ":\n" + j.text;
+    }).catch(function () {
+      return "Die Websuche ist gerade nicht erreichbar. Sage Sir das ehrlich.";
+    });
+  }
   var systemText = anweisung;
   var letzterStatus = 0;
   function frageGemini(text) {
@@ -119,6 +129,15 @@
     return kontextHolen(text).then(function (kontext) {
       systemText = anweisung + kontext;
       return probiere(0);
+    }).then(function (antwort) {
+      var m = antwort.match(/\[SUCHE\|([^\]]*)\]/);
+      if (!m) return antwort;
+      return sucheHolen(m[1]).then(function (erg) {
+        systemText = systemText + "\n\n" + erg + "\nBeantworte Sir jetzt kurz mit diesen Ergebnissen. Setze keine Markierung.";
+        return probiere(0);
+      }).then(function (neu) {
+        return neu.replace(/\[SUCHE\|[^\]]*\]/g, "").trim() || "Dazu habe ich nichts gefunden, Sir.";
+      });
     }).then(function (antwort) {
       verlauf.push({ role: "assistant", content: antwort });
       return antwort;
