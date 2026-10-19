@@ -37,7 +37,7 @@
   // ---------- Gespraech: Mikrofon -> Gemini -> Stimme ----------
   var KEY = window.CLAUDE_KEY || "";
   var modelle = ["claude-haiku-5-5", "claude-haiku-4-5"];
-  var anweisung = "Du bist Jarvis, der persoenliche Sprachassistent von Tim. Du nennst Tim immer Sir, niemals beim Namen. Antworte immer auf Deutsch, freundlich, locker und sehr kurz (hoechstens 1 kurzer Satz), weil deine Antwort vorgelesen wird. Keine Aufzaehlungen, keine Sternchen, keine Sonderzeichen. Wenn Sir einen neuen Termin eintragen lassen will und Datum und Uhrzeit klar sind, haenge ganz am Ende deiner Antwort genau diese Markierung an: [TERMIN|JJJJ-MM-TT|HH:MM|Dauer in Minuten|Titel]. Beispiel: [TERMIN|2026-10-19|10:00|60|Zahnarzt]. Ohne Dauerangabe nimm 60. Sage davor in einem kurzen Satz, was du eintraegst. Fehlt Datum oder Uhrzeit, frage kurz nach und setze keine Markierung. Wenn Sir einen Termin loeschen will und Tag und Titel klar sind, haenge stattdessen am Ende an: [LOESCHEN|JJJJ-MM-TT|Titel]. Benutze Markierungen nie fuer etwas anderes.";
+  var anweisung = "Du bist Jarvis, der persoenliche Sprachassistent von Tim. Du nennst Tim immer Sir, niemals beim Namen. Antworte immer auf Deutsch, freundlich, locker und sehr kurz (hoechstens 1 kurzer Satz), weil deine Antwort vorgelesen wird. Keine Aufzaehlungen, keine Sternchen, keine Sonderzeichen. Wenn Sir einen neuen Termin eintragen lassen will und Datum und Uhrzeit klar sind, haenge ganz am Ende deiner Antwort genau diese Markierung an: [TERMIN|JJJJ-MM-TT|HH:MM|Dauer in Minuten|Titel]. Beispiel: [TERMIN|2026-10-19|10:00|60|Zahnarzt]. Ohne Dauerangabe nimm 60. Sage davor in einem kurzen Satz, was du eintraegst. Fehlt Datum oder Uhrzeit, frage kurz nach und setze keine Markierung. Wenn Sir einen Termin loeschen will und Tag und Titel klar sind, haenge stattdessen am Ende an: [LOESCHEN|JJJJ-MM-TT|Titel]. Benutze Markierungen nie fuer etwas anderes. Bei einem Briefing (guten Morgen, Ueberblick) fasse Wetter, Termine und Nachrichten in hoechstens fuenf kurzen Saetzen zusammen. Nutze Wetter- und Nachrichtendaten nur, wenn sie unten angegeben sind, und erfinde nichts dazu.";
   var verlauf = [];
   var aktiv = false, erkenner = null, stimme = null, sprichtGerade = false;
   var knopf = document.getElementById("b-sprechen");
@@ -65,6 +65,27 @@
     }).catch(function () {
       return "\n\nDer Kalender ist gerade nicht erreichbar. Sage Sir das ehrlich, wenn er nach Terminen fragt.";
     });
+  }
+  var wetterFrage = /wetter|regen|regnet|temperatur|sonne|schnee|gewitter|draussen|jacke|schirm|warm|kalt/i;
+  var newsFrage = /nachricht|news|neuigkeit|schlagzeile|passiert/i;
+  var briefFrage = /briefing|guten morgen|ueberblick|überblick/i;
+  function holeText(pfad, vorspann, name) {
+    return fetch("http://localhost:8765/" + pfad, { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error(pfad);
+      return r.json();
+    }).then(function (j) {
+      return "\n\n" + vorspann + j.text;
+    }).catch(function () {
+      return "\n\n" + name + " sind gerade nicht erreichbar. Sage Sir das ehrlich.";
+    });
+  }
+  function kontextHolen(text) {
+    var teile = [];
+    var brief = briefFrage.test(text);
+    if (kalFrage.test(text) || brief) teile.push(holeTermine(text));
+    if (wetterFrage.test(text) || brief) teile.push(holeText("wetter", "Wetter in Hoevelhof: ", "Die Wetterdaten"));
+    if (newsFrage.test(text) || brief) teile.push(holeText("nachrichten", "Aktuelle Schlagzeilen (Tagesschau): ", "Die Nachrichten"));
+    return Promise.all(teile).then(function (a) { return a.join(""); });
   }
   var systemText = anweisung;
   var letzterStatus = 0;
@@ -95,7 +116,7 @@
         });
       });
     }
-    return (kalFrage.test(text) ? holeTermine(text) : Promise.resolve("")).then(function (kontext) {
+    return kontextHolen(text).then(function (kontext) {
       systemText = anweisung + kontext;
       return probiere(0);
     }).then(function (antwort) {
