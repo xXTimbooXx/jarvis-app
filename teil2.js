@@ -172,21 +172,50 @@
     } catch (e) { ac = null; }
   }
 
-  var FUELLER_ANZAHL = 100, fuellerNaechst = null, fuellerLetzt = -1;
+  var fuellerNaechst = null, fuellerLetzte = [], fragenVerlauf = [];
+  function fuellerNummer() {
+    var n, versuche = 0;
+    do {
+      n = (Math.random() < 0.35) ? 100 + Math.floor(Math.random() * 100) : Math.floor(Math.random() * 100);
+      versuche++;
+    } while (fuellerLetzte.indexOf(n) >= 0 && versuche < 50);
+    fuellerLetzte.push(n);
+    if (fuellerLetzte.length > 40) fuellerLetzte.shift();
+    return n;
+  }
+  function fuellerHolen(n) {
+    return fetch("fueller/f" + n + ".mp3")
+      .then(function (r) { if (!r.ok) throw new Error("kein Fuellsatz"); return r.arrayBuffer(); })
+      .then(function (b) { return new Promise(function (ok, nein) { ac.decodeAudioData(b, ok, nein); }); });
+  }
   function fuellerLaden() {
     if (fuellerNaechst || !ac) return;
-    var n;
-    do { n = Math.floor(Math.random() * FUELLER_ANZAHL); } while (n === fuellerLetzt);
-    fuellerLetzt = n;
-    fetch("fueller/f" + n + ".mp3")
-      .then(function (r) { if (!r.ok) throw new Error("kein Fuellsatz"); return r.arrayBuffer(); })
-      .then(function (b) { return new Promise(function (ok, nein) { ac.decodeAudioData(b, ok, nein); }); })
-      .then(function (x) { fuellerNaechst = x; })
-      .catch(function () {});
+    fuellerHolen(fuellerNummer()).then(function (x) { fuellerNaechst = x; }).catch(function () {});
   }
-  function fuellerSpielen() {
-    if (!fuellerNaechst || !ac) return;
-    try { var q = ac.createBufferSource(); q.buffer = fuellerNaechst; q.connect(ac.destination); q.start(0); } catch (e) {}
+  function fuellerAbspielen(buf) {
+    try { var q = ac.createBufferSource(); q.buffer = buf; q.connect(ac.destination); q.start(0); } catch (e) {}
+  }
+  function istWiederholung(frage) {
+    var w = frage.toLowerCase().replace(/[^a-zäöüß0-9 ]/g, " ").split(/\s+/).filter(function (x) { return x.length > 2; });
+    var gleich = 0;
+    for (var i = 0; i < fragenVerlauf.length; i++) {
+      var v = fragenVerlauf[i], treffer = 0;
+      for (var k = 0; k < w.length; k++) if (v.indexOf(w[k]) >= 0) treffer++;
+      var gross = Math.max(w.length, v.length);
+      if (gross > 0 && treffer / gross >= 0.7) gleich++;
+    }
+    fragenVerlauf.push(w);
+    if (fragenVerlauf.length > 8) fragenVerlauf.shift();
+    return gleich >= 2;
+  }
+  function fuellerSpielen(frage) {
+    if (!ac) return;
+    if (istWiederholung(frage || "") && Math.random() < 0.7) {
+      fuellerHolen(200 + Math.floor(Math.random() * 15)).then(fuellerAbspielen).catch(function () {});
+      return;
+    }
+    if (!fuellerNaechst) return;
+    fuellerAbspielen(fuellerNaechst);
     fuellerNaechst = null;
     fuellerLaden();
   }
@@ -381,7 +410,7 @@
         weiter = true;
         zeiten.t0 = performance.now();
         setzeZustand("denkt", endtext);
-        fuellerSpielen();
+        fuellerSpielen(endtext);
         frageGemini(endtext).then(function (antwort) {
           if (!aktiv) return;
           terminPruefen(antwort).then(function (text) {
