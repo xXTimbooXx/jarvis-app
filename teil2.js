@@ -36,7 +36,7 @@
 
   // ---------- Gespraech: Mikrofon -> Gemini -> Stimme ----------
   var KEY = window.CLAUDE_KEY || "";
-  var modelle = ["claude-haiku-5-5", "claude-haiku-4-5"];
+  var modelle = ["claude-haiku-4-5", "claude-haiku-5-5"];
   var anweisung = "Du bist Jarvis, der persoenliche Sprachassistent von Tim. Du nennst Tim immer Sir, niemals beim Namen. Antworte immer auf Deutsch, freundlich, locker und sehr kurz (hoechstens 1 kurzer Satz), weil deine Antwort vorgelesen wird. Keine Aufzaehlungen, keine Sternchen, keine Sonderzeichen. Wenn Sir einen neuen Termin eintragen lassen will und Datum und Uhrzeit klar sind, haenge ganz am Ende deiner Antwort genau diese Markierung an: [TERMIN|JJJJ-MM-TT|HH:MM|Dauer in Minuten|Titel]. Beispiel: [TERMIN|2026-10-19|10:00|60|Zahnarzt]. Ohne Dauerangabe nimm 60. Sage davor in einem kurzen Satz, was du eintraegst. Fehlt Datum oder Uhrzeit, frage kurz nach und setze keine Markierung. Wenn Sir einen Termin loeschen will und Tag und Titel klar sind, haenge stattdessen am Ende an: [LOESCHEN|JJJJ-MM-TT|Titel]. Benutze Markierungen nie fuer etwas anderes. Bei einem Briefing (guten Morgen, Ueberblick) fasse Wetter, Termine und Nachrichten in hoechstens fuenf kurzen Saetzen zusammen. Nutze Wetter- und Nachrichtendaten nur, wenn sie unten angegeben sind, und erfinde nichts dazu. Wenn Sir etwas fragt, das aktuelles Wissen aus dem Internet braucht (aktuelle Ereignisse, Ergebnisse, Preise, wer gerade ein Amt hat) und unten keine passenden Daten stehen, antworte NUR mit [SUCHE|kurzer Suchbegriff]. Bei Fragen, die du aus Allgemeinwissen sicher beantworten kannst, suche nicht.";
   var verlauf = [];
   var aktiv = false, erkenner = null, stimme = null, sprichtGerade = false;
@@ -97,6 +97,18 @@
       return "Die Websuche ist gerade nicht erreichbar. Sage Sir das ehrlich.";
     });
   }
+  var zeiten = {};
+  var PAUSE = 800;
+  var STROM = true;
+  function zeigeZeiten() {
+    zeiten.stimme = performance.now();
+    var z = zeiten;
+    function s(x, y) { var d = (y - x) / 1000; return isNaN(d) ? "-" : d.toFixed(1); }
+    var box = document.getElementById("zeitbox");
+    if (!box) { box = document.createElement("div"); box.id = "zeitbox"; box.style.cssText = "position:fixed;top:44px;left:50%;transform:translateX(-50%);font:15px monospace;color:#fff;background:rgba(0,0,0,0.7);padding:6px 12px;z-index:2147483647;white-space:nowrap"; document.body.appendChild(box); }
+    box.textContent = (STROM ? "STROM" : "PUFFER") + " | Warten " + s(z.worte, z.t0) + " | Daten " + s(z.t0, z.kontext) + " | Claude " + s(z.kontext, z.claude) + " | Stimme " + s(z.sprich, z.stimme) + " (Abruf " + s(z.sprich, z.f0) + " Chunk " + s(z.f0, z.chunk) + " Ton " + s(z.chunk, z.stimme) + ") | Gesamt " + s(z.worte, z.stimme);
+    document.title = "Warten " + s(z.worte, z.t0) + " | Daten " + s(z.t0, z.kontext) + " | Claude " + s(z.kontext, z.claude) + " | Stimme " + s(z.sprich, z.stimme) + " | Gesamt " + s(z.worte, z.stimme) + " || Abruf " + s(z.sprich, z.f0) + " | Chunk " + s(z.f0, z.chunk) + " | Ton " + s(z.chunk, z.stimme);
+  }
   var systemText = anweisung;
   var letzterStatus = 0;
   function frageGemini(text) {
@@ -127,6 +139,7 @@
       });
     }
     return kontextHolen(text).then(function (kontext) {
+      zeiten.kontext = performance.now();
       systemText = anweisung + kontext;
       return probiere(0);
     }).then(function (antwort) {
@@ -139,6 +152,7 @@
         return neu.replace(/\[SUCHE\|[^\]]*\]/g, "").trim() || "Dazu habe ich nichts gefunden, Sir.";
       });
     }).then(function (antwort) {
+      zeiten.claude = performance.now();
       verlauf.push({ role: "assistant", content: antwort });
       return antwort;
     }, function (err) {
@@ -158,18 +172,23 @@
     } catch (e) { ac = null; }
   }
 
-  var fuellerBuf = null;
+  var FUELLER_ANZAHL = 100, fuellerNaechst = null, fuellerLetzt = -1;
   function fuellerLaden() {
-    if (fuellerBuf || !ac) return;
-    fetch("http://localhost:8765/sprich?text=" + encodeURIComponent("Einen Moment, Sir."), { cache: "no-store" })
-      .then(function (r) { return r.arrayBuffer(); })
+    if (fuellerNaechst || !ac) return;
+    var n;
+    do { n = Math.floor(Math.random() * FUELLER_ANZAHL); } while (n === fuellerLetzt);
+    fuellerLetzt = n;
+    fetch("fueller/f" + n + ".mp3")
+      .then(function (r) { if (!r.ok) throw new Error("kein Fuellsatz"); return r.arrayBuffer(); })
       .then(function (b) { return new Promise(function (ok, nein) { ac.decodeAudioData(b, ok, nein); }); })
-      .then(function (a) { fuellerBuf = a; })
+      .then(function (x) { fuellerNaechst = x; })
       .catch(function () {});
   }
   function fuellerSpielen() {
-    if (!fuellerBuf || !ac) return;
-    try { var q = ac.createBufferSource(); q.buffer = fuellerBuf; q.connect(ac.destination); q.start(0); } catch (e) {}
+    if (!fuellerNaechst || !ac) return;
+    try { var q = ac.createBufferSource(); q.buffer = fuellerNaechst; q.connect(ac.destination); q.start(0); } catch (e) {}
+    fuellerNaechst = null;
+    fuellerLaden();
   }
 
   function sprichBrowser(text, danach) {
@@ -208,6 +227,7 @@
       el.addEventListener("playing", function () {
         if (laeuft) return; laeuft = true;
         sprichtGerade = true; hinweis = "";
+        zeigeZeiten();
         setzeZustand("spricht", sauberText);
         messer = setInterval(function () {
           an.getByteTimeDomainData(daten);
@@ -229,6 +249,7 @@
           if (gelesen && ms.readyState === "open") { try { ms.endOfStream(); } catch (e) {} }
         }
         sb.addEventListener("updateend", weiter);
+        zeiten.f0 = performance.now();
         fetch(url, { cache: "no-store" }).then(function (r) {
           if (!r.ok) throw new Error("Stimmen-Fehler " + r.status);
           var rd = r.body.getReader();
@@ -237,7 +258,7 @@
             return rd.read().then(function (x) {
               if (x.done) { gelesen = true; weiter(); return; }
               warte.push(x.value); weiter();
-              if (!gespielt) { gespielt = true; el.play().catch(function (e) { if (!laeuft) nein(e); }); }
+              if (!gespielt) { gespielt = true; zeiten.chunk = performance.now(); el.play().catch(function (e) { if (!laeuft) nein(e); }); }
               return lies();
             });
           }
@@ -249,11 +270,11 @@
 
   function sprichEleven(sauber, danach) {
     var url = "http://localhost:8765/sprich?text=" + encodeURIComponent(sauber);
-    if (!(window.MediaSource && MediaSource.isTypeSupported && MediaSource.isTypeSupported("audio/mpeg"))) {
+    if (!STROM || !(window.MediaSource && MediaSource.isTypeSupported && MediaSource.isTypeSupported("audio/mpeg"))) {
       return sprichPuffer(sauber, danach);
     }
     sauberText = sauber;
-    return sprichStrom(url, danach).catch(function () { return sprichPuffer(sauber, danach); });
+    return sprichStrom(url, danach).catch(function (e) { document.title = "FALLBACK: " + (e && e.message ? e.message : e); return sprichPuffer(sauber, danach); });
   }
 
   var sauberText = "";
@@ -277,6 +298,8 @@
       }
       quelle.onended = ende;
       sprichtGerade = true; hinweis = "";
+      zeiten.f0 = zeiten.sprich; zeiten.chunk = zeiten.sprich;
+      zeigeZeiten();
       setzeZustand("spricht", sauber);
       messer = setInterval(function () {
         an.getByteTimeDomainData(daten);
@@ -334,12 +357,15 @@
     erkenner.lang = "de-DE";
     erkenner.interimResults = true;
     erkenner.continuous = false;
-    var endtext = "", weiter = false;
+    var endtext = "", weiter = false, stille = null;
     erkenner.onstart = function () { setzeZustand("hoert"); };
     erkenner.onresult = function (e) {
       var t = "";
       for (var i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
       endtext = t;
+      zeiten.worte = performance.now();
+      clearTimeout(stille);
+      stille = setTimeout(function () { try { erkenner.stop(); } catch (e) {} }, PAUSE);
       document.getElementById("text").textContent = t;
     };
     erkenner.onerror = function (e) {
@@ -349,15 +375,18 @@
       }
     };
     erkenner.onend = function () {
+      clearTimeout(stille);
       if (!aktiv) return;
       if (endtext.trim()) {
         weiter = true;
+        zeiten.t0 = performance.now();
         setzeZustand("denkt", endtext);
         fuellerSpielen();
         frageGemini(endtext).then(function (antwort) {
           if (!aktiv) return;
           terminPruefen(antwort).then(function (text) {
             if (!aktiv) return;
+            zeiten.sprich = performance.now();
             sprich(text, function () { if (aktiv) hoeren(); });
           });
         }).catch(function (err) {
