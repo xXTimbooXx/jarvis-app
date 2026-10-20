@@ -109,6 +109,42 @@
     box.textContent = (STROM ? "STROM" : "PUFFER") + " | Warten " + s(z.worte, z.t0) + " | Daten " + s(z.t0, z.kontext) + " | Claude " + s(z.kontext, z.claude) + " | Stimme " + s(z.sprich, z.stimme) + " (Abruf " + s(z.sprich, z.f0) + " Chunk " + s(z.f0, z.chunk) + " Ton " + s(z.chunk, z.stimme) + ") | Gesamt " + s(z.worte, z.stimme);
     document.title = "Warten " + s(z.worte, z.t0) + " | Daten " + s(z.t0, z.kontext) + " | Claude " + s(z.kontext, z.claude) + " | Stimme " + s(z.sprich, z.stimme) + " | Gesamt " + s(z.worte, z.stimme) + " || Abruf " + s(z.sprich, z.f0) + " | Chunk " + s(z.f0, z.chunk) + " | Ton " + s(z.chunk, z.stimme);
   }
+  function heutigesDatum() {
+    var jetzt = new Date();
+    var wt = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
+    var tag = String(jetzt.getDate()).padStart(2, "0");
+    var monat = String(jetzt.getMonth() + 1).padStart(2, "0");
+    return "\n\nHeutiges Datum (nutze es fuer alle Fragen nach Datum, Wochentag, morgen, uebermorgen; verlasse dich dafuer nie auf dein eigenes Wissen): " + wt[jetzt.getDay()] + ", " + tag + "." + monat + "." + jetzt.getFullYear() + ".";
+  }
+  function gedaechtnisLesen() {
+    return fetch("http://localhost:8765/gedaechtnis", { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error("gedaechtnis");
+      return r.json();
+    }).then(function (j) {
+      if (!j.eintraege || !j.eintraege.length) return "";
+      return "\n\nDas hast du dir ueber Sir gemerkt (nutze es passend, erwaehne es nicht unaufgefordert):\n- " + j.eintraege.join("\n- ");
+    }).catch(function () { return ""; });
+  }
+  function gedaechtnisPruefen(frage, antwort) {
+    var merkBefehl = /merk dir|merke dir|vergiss nicht|notier dir/i.test(frage);
+    if (!merkBefehl && frage.length < 25) return;
+    var saubere = antwort.replace(/\[[A-Z]+\|[^\]]*\]/g, "").trim();
+    var pruef = "Entscheide, ob dieser Dialog eine dauerhaft wichtige Tatsache ueber Sir enthaelt, die man sich fuer kuenftige Gespraeche merken sollte (Vorlieben, Abneigungen, Routinen, wiederkehrende Termine, wichtige Namen, Gewohnheiten). " +
+      (merkBefehl ? "Sir hat ausdruecklich gebeten, sich etwas zu merken. Fasse es in einem kurzen Satz zusammen. " : "Melde nur etwas, das wirklich dauerhaft wichtig ist, nicht bei Smalltalk, Zeit-, Wetter- oder Einmalfragen. ") +
+      "Antworte NUR mit dem kurzen Merksatz in der dritten Person (zum Beispiel: Sir geht freitags ins Fitnessstudio.) oder, wenn nichts zu merken ist, NUR mit dem einen Wort NICHTS.\n\nSir sagte: " + frage + "\nJarvis antwortete: " + saubere;
+    fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+      body: JSON.stringify({ model: modelle[0], max_tokens: 60, messages: [{ role: "user", content: pruef }] })
+    }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+      if (!j) return;
+      var t = "";
+      try { t = j.content.map(function (p) { return p.text || ""; }).join(" ").trim(); } catch (e) {}
+      if (t && t.toUpperCase().indexOf("NICHTS") === -1) {
+        fetch("http://localhost:8765/gedaechtnis_hinzu?text=" + encodeURIComponent(t), { cache: "no-store" }).catch(function () {});
+      }
+    }).catch(function () {});
+  }
   var systemText = anweisung;
   var letzterStatus = 0;
   function frageGemini(text) {
@@ -138,9 +174,9 @@
         });
       });
     }
-    return kontextHolen(text).then(function (kontext) {
+    return Promise.all([kontextHolen(text), gedaechtnisLesen()]).then(function (teile) {
       zeiten.kontext = performance.now();
-      systemText = anweisung + kontext;
+      systemText = anweisung + heutigesDatum() + teile[0] + teile[1];
       return probiere(0);
     }).then(function (antwort) {
       var m = antwort.match(/\[SUCHE\|([^\]]*)\]/);
@@ -421,6 +457,7 @@
         fuellerSpielen(endtext);
         frageGemini(endtext).then(function (antwort) {
           if (!aktiv) return;
+          gedaechtnisPruefen(endtext, antwort);
           terminPruefen(antwort).then(function (text) {
             if (!aktiv) return;
             zeiten.sprich = performance.now();
